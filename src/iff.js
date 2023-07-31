@@ -371,7 +371,7 @@ export function debugIff(iff, message) {
         var mask = 1 << (31 - j);
         if (mask & line_bitmap) {
           var line_number = start_line + (i * 32) + j;
-          iff.color_change_lists[line_number] = new Array();
+          iff.color_change_lists[line_number] = [];
           change_count++;
         }
       }
@@ -725,8 +725,8 @@ export function debugIff(iff, message) {
     this.canvas = document.getElementById(canvas_id);
     this.scope = '';
     this.mode = new Object();
-    this.color_animations = new Array();
-    this.color_change_lists = new Array();
+    this.color_animations = [];
+    this.color_change_lists = [];
     this.transparent_color = [0, 0, 0, 0];
     this.black_color = [0, 0, 0, 255];
     this.debug_element = document.getElementById(canvas_id + "_debug");

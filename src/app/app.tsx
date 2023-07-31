@@ -2,10 +2,11 @@
 import { useEffect } from 'react'
 import { loadIffImage } from '../iff'
 
-const testFile = './island.iff'
+// const testFile = './island.iff'
+const testFile = './clown-ehb.iff'
 
 type FormatID = 'ILBM' | 'PBM '
-type ChunkID = 'BMHD' | 'CMAP' | 'SPRT' | 'BODY' | 'CCRT' | 'CRNG'
+type ChunkID = 'BMHD' | 'CMAP' | 'SPRT' | 'BODY' | 'CCRT' | 'CRNG' | 'CAMG'
 
 const MaskTypes = {
   NONE: 0,
@@ -38,6 +39,12 @@ interface BODY_Chunk {
 interface CMAP_Chunk {
   ID: ChunkID,
   palette: Uint8ClampedArray
+}
+
+interface CAMG_Chunk {
+  ID: ChunkID
+  ham: boolean
+  ehb: boolean
 }
 
 interface BMHD_Chunk {
@@ -124,7 +131,7 @@ class Buffer {
   readAsciiString(length: number) {
     this.offset += length
     const view = new DataView(this.buffer, this.offset - length, length)
-    var decoder = new TextDecoder('utf-8')
+    const decoder = new TextDecoder('utf-8')
 
     return decoder.decode(view)
   }
@@ -138,6 +145,8 @@ class IFF_Decoder {
   header?: IFFHeader
   chunks: Chunk[] = []
   buffer: Buffer
+  ham = false
+  ehb = false
 
   constructor(buffer: ArrayBuffer) {
     this.buffer = new Buffer(buffer)
@@ -215,6 +224,11 @@ class IFF_Decoder {
           this.chunks.push(this.decodeCMAPChunk(chunkLength))
           break
 
+        case 'CAMG':
+          console.log('decoding CAMG Chunk...', chunkLength)
+          this.chunks.push(this.decodeCAMGChunk())
+          break
+
         case 'BODY':
           console.log('decoding BODY chunk...', chunkLength)
           this.chunks.push(this.decodeBODYChunk(chunkLength))
@@ -232,7 +246,6 @@ class IFF_Decoder {
       }
       // add pad byte if needed
       if (chunkLength % 2) {
-        debugger
         this.buffer.offset++
       }
     }
@@ -243,16 +256,18 @@ class IFF_Decoder {
     const { pitch, w, h, nPlanes } = bmhd
     const chunky = new Uint8ClampedArray(w * h)
     
+    console.log('planes', nPlanes)
+
     if (!bitplanes) {
       return null
     }
 
     for (let y = 0; y < h; y++) {
       for (let p = 0; p < nPlanes; p++) {
-	      let planeMask = 1 << p
+	      const planeMask = 1 << p
         for (let i = 0; i < pitch; i++) {
-          let offset = (pitch * nPlanes * y) + (p * pitch) + i
-          let bit = bitplanes[offset]
+          const offset = (pitch * nPlanes * y) + (p * pitch) + i
+          const bit = bitplanes[offset]
         
           for (let b = 0; b < 8; b++) {
             const mask = 1 << (7 - b)
@@ -269,26 +284,31 @@ class IFF_Decoder {
       return chunky
     }
 
-  displayImage(pixelData: Uint8ClampedArray) {
+  displayImage(pixelData: Uint8ClampedArray, bmhd: BMHD_Chunk) {
+    const { nPlanes } = bmhd
     const { palette } = this.chunks.find(({ ID }) => ID === 'CMAP') as CMAP_Chunk
     const { w, h } = this.chunks.find(({ ID }) => ID === 'BMHD') as BMHD_Chunk
     const imageData = new ImageData(w, h)
     const data = imageData.data
+    const numColors = palette.byteLength / 4
 
     for (let j = 0; j < h; ++j) {
       for (let i = 0; i < w; ++i) {
         const color = pixelData[((j * w) + i)] * 4
         const idx = ((j * w) + i) * 4
-        // console.log('color=', color)
-        // console.log(`pixel[${idx}]=(${palette[color]}, ${palette[color + 1]}, ${palette[color + 2]}, ${palette[color + 3]})`)
-        // R
-        data[idx] = palette[color]
-        // G
-        data[idx + 1] = palette[color + 1]
-        // B
-        data[idx + 2] = palette[color + 2]
-        // A
-        data[idx + 3] = palette[color + 3]
+        if (color < numColors * 4) {
+          data[idx] = palette[color]
+          data[idx + 1] = palette[color + 1]
+          data[idx + 2] = palette[color + 2]
+          data[idx + 3] = palette[color + 3]
+        } else {
+          debugger
+          // const baseColor = ((color / 4) % numColors) * 4
+          // data[idx] = palette[baseColor] >> 1
+          // data[idx + 1] = palette[baseColor + 1]  >> 1
+          // data[idx + 2] = palette[baseColor + 2]  >> 1
+          // data[idx + 3] = palette[baseColor + 3]
+        }
       }
     }
 
@@ -298,6 +318,50 @@ class IFF_Decoder {
     const ctx = canvas.getContext('2d')
     console.log(ctx)
     ctx.putImageData(imageData, 0, 0)
+  }
+
+  extendEHBPalette() {
+    const chunk = this.chunks.find(({ ID }) => ID === 'CMAP') as CMAP_Chunk
+    const palette = chunk.palette
+    // Some files have the EHB bit set but already contain a 64 colours palette
+    // probably for upward compatibility: in this case we don't have to extend
+    // the palette.
+    // Files created before (eg. DPaint <= 4) only have a 32 colours CMAP.
+    if (palette.byteLength > 32 * 4) {
+      console.log('ehb is set but palette is already > 32 colours')
+      return
+    }
+    const extendedPalette = new Uint8ClampedArray(palette.byteLength * 2)
+    // copy current palette
+    for (let i = 0; i < palette.byteLength; ++ i) {
+      extendedPalette[i] = palette[i]
+    }
+    // extend palette
+    for (let i = palette.byteLength, j=0; i < extendedPalette.byteLength; i+=4, j+=4) {
+      extendedPalette[i] = palette[j] >> 1
+      extendedPalette[i + 1] = palette[j + 1] >> 1
+      extendedPalette[i + 2] = palette[j + 2] >> 1
+      extendedPalette[i + 3] = 255
+    }
+
+    chunk.palette = extendedPalette
+  }
+
+  decodeCAMGChunk() {
+    const mode = this.buffer.readUint32()
+    this.ham = !!(mode & 0x800)
+    this.ehb = !!(mode & 0x80)
+
+    // Enlarge the palette with 32 darker colors
+    if (this.ehb) {
+      this.extendEHBPalette()
+    }
+
+    return {
+      ID: 'CAMG',
+      ham: this.ham,
+      ehb: this.ehb
+    } as CAMG_Chunk
   }
 
   decodeCRNGChunk(length: number) {
@@ -320,29 +384,28 @@ class IFF_Decoder {
 
   decodeBODYChunk(length: number) {
     const bmhd = this.chunks.find(({ ID }) => ID === 'BMHD') as BMHD_Chunk
+    let pixelData: Uint8ClampedArray = null
+
     console.log('my row_bytes', bmhd.pitch)
     if (bmhd) {
       const { compression } = bmhd
       // RLE
-      if (compression === 1) {
-        const planes = this.uncompressRLE(this.buffer.getSubView(), length)
-        console.log('my iff bitplanes', planes)
-        const pixelData = this.planarToChunky(planes, bmhd)
-        console.log('my pixel_buffer', pixelData)
-        this.displayImage(pixelData!)
+      const planes = compression === 1 ?
+      this.uncompressRLE(this.buffer.getSubView(), length)
+      :
+      new Uint8ClampedArray(this.buffer.buffer, this.buffer.offset, length)
 
-        return {
-          ID: 'BODY',
-          pixelData,
-        } as BODY_Chunk
-      }
+      console.log('my iff bitplanes', planes)
+      pixelData = this.planarToChunky(planes, bmhd)
+
+      console.log('my pixel_buffer', pixelData)
+      this.displayImage(pixelData!, bmhd)
     }
 
-    debugger
     return {
-        ID: 'BODY',
-        pixelData: null
-      } as BODY_Chunk
+      ID: 'BODY',
+      pixelData,
+    } as BODY_ChunkODY_Chunk
     }
 
   decodeCMAPChunk(length: number) {
@@ -405,7 +468,6 @@ async function loadImage() {
 
 export function App() {
   useEffect(() => {
-    console.log('yo: useEffect')
     loadImage()
     loadIffImage(testFile, 'toto2', true)
   }, [])
