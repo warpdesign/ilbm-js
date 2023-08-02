@@ -3,7 +3,7 @@ import { useEffect } from 'react'
 import { loadIffImage } from '../iff'
 
 // const testFile = './island.iff'
-const testFile = './clown-ehb.iff'
+const testFile = './newtut-ham.iff'
 
 type FormatID = 'ILBM' | 'PBM '
 type ChunkID = 'BMHD' | 'CMAP' | 'SPRT' | 'BODY' | 'CCRT' | 'CRNG' | 'CAMG'
@@ -293,22 +293,33 @@ class IFF_Decoder {
     const numColors = palette.byteLength / 4
 
     for (let j = 0; j < h; ++j) {
+      let previousRGBA = [0, 0, 0, 255]
       for (let i = 0; i < w; ++i) {
-        const color = pixelData[((j * w) + i)] * 4
+        const color = pixelData[((j * w) + i)]
+        const paletteIndex = color * 4
         const idx = ((j * w) + i) * 4
-        if (color < numColors * 4) {
-          data[idx] = palette[color]
-          data[idx + 1] = palette[color + 1]
-          data[idx + 2] = palette[color + 2]
-          data[idx + 3] = palette[color + 3]
+        if (color < numColors) {
+          data[idx] = palette[paletteIndex]
+          data[idx + 1] = palette[paletteIndex + 1]
+          data[idx + 2] = palette[paletteIndex + 2]
+          data[idx + 3] = palette[paletteIndex + 3]
         } else {
-          debugger
-          // const baseColor = ((color / 4) % numColors) * 4
-          // data[idx] = palette[baseColor] >> 1
-          // data[idx + 1] = palette[baseColor + 1]  >> 1
-          // data[idx + 2] = palette[baseColor + 2]  >> 1
-          // data[idx + 3] = palette[baseColor + 3]
+          const control = (color & 0x30) >> 4
+          data[idx] = previousRGBA[0]
+          data[idx + 1] = previousRGBA[1]
+          data[idx + 2] = previousRGBA[2]
+          data[idx + 3] = previousRGBA[3]
+          const val = color % numColors
+          if (control === 1) {
+            // TODO: correctly pad to 8 bits
+            data[idx + 2] = val << 4
+          } else if (control === 2) {
+            data[idx] = val << 4            
+          } else {
+            data[idx + 1] = val << 4
+          }
         }
+        previousRGBA = [data[idx], data[idx + 1], data[idx + 2], data[idx + 3]]
       }
     }
 
@@ -347,6 +358,23 @@ class IFF_Decoder {
     chunk.palette = extendedPalette
   }
 
+  reduceHAMPalette() {
+    const cmap = this.chunks.find(({ ID }) => ID === 'CMAP') as CMAP_Chunk
+    const palette = cmap.palette
+    const { nPlanes } = this.getBMHD()
+
+    let bits = 0
+    const numColors = palette.byteLength / 4
+    while (2**bits <= numColors)
+      bits++;
+
+    if (bits > nPlanes) {
+      bits -= (bits - nPlanes) + 2
+      const length = numColors >> bits
+      cmap.palette = cmap.palette.slice(0, 4 * length)
+    }
+  }
+
   decodeCAMGChunk() {
     const mode = this.buffer.readUint32()
     this.ham = !!(mode & 0x800)
@@ -355,6 +383,8 @@ class IFF_Decoder {
     // Enlarge the palette with 32 darker colors
     if (this.ehb) {
       this.extendEHBPalette()
+    } else if (this.ham) {
+      this.reduceHAMPalette()
     }
 
     return {
