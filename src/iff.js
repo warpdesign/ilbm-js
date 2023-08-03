@@ -186,6 +186,7 @@ export function debugIff(iff, message) {
     while (iff.cmap.length > (1 << iff.cmap_bits)) {
       iff.cmap_bits++;
     }
+
     var scaled = isCMAPScaled(iff);
     debugIff(iff, 'Color map is ' + iff.cmap.length + ' colours (' + iff.cmap_bits + ' bits)');
     if (!scaled) {
@@ -232,6 +233,7 @@ export function debugIff(iff, message) {
       iff.cmap_overlay.length = iff.cmap.length;
     }
     if (iff.mode.ham && iff.cmap_bits > iff.bitplanes - 2) {
+      debugger
       var delta = (iff.cmap_bits - iff.bitplanes + 2);
       iff.cmap_bits -= delta;
       debugIff(iff, 'Culling color map to ' + iff.cmap_bits + ' bits for HAM');
@@ -443,6 +445,9 @@ export function debugIff(iff, message) {
   export function bitPlaneToPixBuffer(iff, bit_buffer) {
     iff.buffer_size = iff.height * iff.width;
     iff.buffer = new Array(iff.buffer_size);
+    for (let i = 0; i < iff.buffer.length; ++i)
+      iff.buffer[0] = 0
+
     var planes = iff.bitplanes;
     if (iff.masking == 1) {
       planes += 1;
@@ -538,6 +543,7 @@ export function debugIff(iff, message) {
     var selector = (value >> iff.cmap_bits) & 3;
     var data = padTo8bits((value % iff.cmap.length), iff.cmap_bits);
     var color_copy = [previous_color[0], previous_color[1], previous_color[2], 255];
+
     if (selector == 1) {
       color_copy[2] = data;
     } else if (selector == 2) {
@@ -653,6 +659,8 @@ export function debugIff(iff, message) {
     render_ctx.imageSmoothingEnabled = false
     var target = render_ctx.createImageData(iff.width, iff.height);
     var color;
+    console.log(iff, iff.buffer)
+
     for (var y = 0; y < iff.height; y++) {
       lineStart(iff, y);
       color = iff.black_color;
@@ -660,6 +668,11 @@ export function debugIff(iff, message) {
         var in_offset = y * iff.width + x;
         var out_offset = y * iff.width + x;
         var value = iff.buffer[in_offset];
+        if (y < 1 && x < 2) {
+          console.log(`(${x}, ${y}) = ${value}`)
+        }
+        if (!y && x == 1)
+          debugger
         color = resolvePixels(iff, value, color);
         for (var c = 0; c < 4; c++) {
           target.data[out_offset * 4 + c] = color[c];

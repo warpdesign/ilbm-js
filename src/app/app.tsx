@@ -3,7 +3,8 @@ import { useEffect } from 'react'
 import { loadIffImage } from '../iff'
 
 // const testFile = './island.iff'
-const testFile = './newtut-ham.iff'
+// const testFile = './newtut-ham.iff'
+const testFile = './bateau-ham8.iff'
 
 type FormatID = 'ILBM' | 'PBM '
 type ChunkID = 'BMHD' | 'CMAP' | 'SPRT' | 'BODY' | 'CCRT' | 'CRNG' | 'CAMG'
@@ -18,27 +19,28 @@ const MaskTypes = {
 
 /* Non-standard Colour range chunk used by DPaint */
 interface CRNG_Chunk {
-  // INT16BE	padding	0x0000
+ 
   // INT16BE	rate	Colour cycle rate. The units are such that a rate of 60 steps per second is represented as 214 = 16384. Lower rates can be obtained by linear scaling: for 30 steps/second, rate = 8192.
-  // INT16BE	flags	Flags which control the cycling of colours through the palette. If bit0 is 1, the colours should cycle, otherwise this colour register range is inactive and should have no effect. If bit1 is 0, the colours cycle upwards, i.e. each colour moves into the next index position in the colour map and the uppermost colour in the range moves down to the lowest position. If bit1 is 1, the colours cycle in the opposite direction. Only those colours between the low and high entries in the colour map should cycle.
-  // UINT8	low	The index of the first entry in the colour map that is part of this range.
-  // UINT8	high	The index of the last entry in the colour map that is part of this range.
   rate: number
+  // INT16BE	flags	Flags which control the cycling of colours through the palette. If bit0 is 1, the colours should cycle, otherwise this colour register range is inactive and should have no effect. If bit1 is 0, the colours cycle upwards, i.e. each colour moves into the next index position in the colour map and the uppermost colour in the range moves down to the lowest position. If bit1 is 1, the colours cycle in the opposite direction. Only those colours between the low and high entries in the colour map should cycle.  
   active: boolean
   reverse: boolean
-  // lower and upper colour indexes of the range
+  // UINT8	high	The index of the last entry in the colour map that is part of this range.
   upper: number
+  // UINT8	low	The index of the first entry in the colour map that is part of this range.
   lower: number
 }
 
 interface BODY_Chunk {
-  ID: ChunkID,
+  ID: ChunkID
   pixelData: Uint8ClampedArray | null
 }
 
 interface CMAP_Chunk {
-  ID: ChunkID,
+  ID: ChunkID
   palette: Uint8ClampedArray
+  // cmap bits
+  bits: number
 }
 
 interface CAMG_Chunk {
@@ -78,7 +80,7 @@ interface BMHD_Chunk {
     pitch: number
 }
 
-type Chunk = BMHD_Chunk | CMAP_Chunk | BODY_Chunk | CRNG_Chunk
+type Chunk = BMHD_Chunk | CMAP_Chunk | BODY_Chunk | CRNG_Chunk | CAMG_Chunk
 
 interface IFFHeader {
   formatID: FormatID
@@ -147,6 +149,8 @@ class IFF_Decoder {
   buffer: Buffer
   ham = false
   ehb = false
+  bmhd?: BMHD_Chunk
+  cmap?: CMAP_Chunk
 
   constructor(buffer: ArrayBuffer) {
     this.buffer = new Buffer(buffer)
@@ -169,12 +173,8 @@ class IFF_Decoder {
     }
   }
 
-  getBMHD() {
-    return this.chunks.find(({ ID }) => ID === 'BMHD') as BMHD_Chunk
-  }
-
   uncompressRLE(buffer: DataView, length: number) {
-    const bmhd = this.getBMHD()
+    const bmhd = this.bmhd
 
     if (bmhd) {
       const { h, nPlanes, pitch } = bmhd
@@ -203,8 +203,6 @@ class IFF_Decoder {
 
       return pixelData
     }
-
-    return null
   }
 
   decodeChunks() {
@@ -216,12 +214,14 @@ class IFF_Decoder {
       switch(chunkID) {
         case 'BMHD':
           console.log('decoding BMHD Chunk...')
-          this.chunks.push(this.decodeBMHDChunk())
+          this.bmhd = this.decodeBMHDChunk()
+          this.chunks.push(this.bmhd)
           break
 
         case 'CMAP':
           console.log('decoding CMAP Chunk...', chunkLength)
-          this.chunks.push(this.decodeCMAPChunk(chunkLength))
+          this.cmap = this.decodeCMAPChunk(chunkLength)
+          this.chunks.push(this.cmap)
           break
 
         case 'CAMG':
@@ -252,14 +252,14 @@ class IFF_Decoder {
   }
 
   /** Convert interleaved Amiga planar to chunky pixel indexes */
-  planarToChunky(bitplanes: Uint8ClampedArray | null, bmhd: BMHD_Chunk) {
-    const { pitch, w, h, nPlanes } = bmhd
+  planarToChunky(bitplanes?: Uint8ClampedArray) {
+    const { pitch, w, h, nPlanes } = this.bmhd!
     const chunky = new Uint8ClampedArray(w * h)
     
     console.log('planes', nPlanes)
 
     if (!bitplanes) {
-      return null
+      return
     }
 
     for (let y = 0; y < h; y++) {
@@ -284,15 +284,20 @@ class IFF_Decoder {
       return chunky
     }
 
-  displayImage(pixelData: Uint8ClampedArray, bmhd: BMHD_Chunk) {
-    const { nPlanes } = bmhd
-    const { palette } = this.chunks.find(({ ID }) => ID === 'CMAP') as CMAP_Chunk
-    const { w, h } = this.chunks.find(({ ID }) => ID === 'BMHD') as BMHD_Chunk
+  displayImage(pixelData: Uint8ClampedArray) {
+    const { palette, bits } = this.cmap!
+    const { w, h } = this.bmhd!
     const imageData = new ImageData(w, h)
     const data = imageData.data
     const numColors = palette.byteLength / 4
 
     for (let j = 0; j < h; ++j) {
+      // This is for HAM only: if control is
+      // set for the first pixel of a line, we use black color
+      // as a reference.
+      //
+      // Note: on a real Amiga this would be the border color instead
+      // but we have no such thing in this context.
       let previousRGBA = [0, 0, 0, 255]
       for (let i = 0; i < w; ++i) {
         const color = pixelData[((j * w) + i)]
@@ -304,19 +309,29 @@ class IFF_Decoder {
           data[idx + 2] = palette[paletteIndex + 2]
           data[idx + 3] = palette[paletteIndex + 3]
         } else {
-          const control = (color & 0x30) >> 4
+          // If we're here it means control bit is not 0,
+          // because otherwise the color index would target
+          // current palette. So We have to calculate the
+          // current pixel color by altering the previous pixel'
+          // r/g/b components.
+          const control = (color >> bits) & 0x3
+          // first set current pixel using previous color
           data[idx] = previousRGBA[0]
           data[idx + 1] = previousRGBA[1]
           data[idx + 2] = previousRGBA[2]
           data[idx + 3] = previousRGBA[3]
-          const val = color % numColors
+
+          // Since we only have cmap.bits - 2 to define
+          // the component, we need to pad it to 8 bit.
+          const val = (color % numColors) << (8 - bits)
+          // Alter r/g/b based on the value of control
+          // see: https://en.wikipedia.org/wiki/Hold-And-Modify
           if (control === 1) {
-            // TODO: correctly pad to 8 bits
-            data[idx + 2] = val << 4
+            data[idx + 2] = val
           } else if (control === 2) {
-            data[idx] = val << 4            
+            data[idx] = val
           } else {
-            data[idx + 1] = val << 4
+            data[idx + 1] = val
           }
         }
         previousRGBA = [data[idx], data[idx + 1], data[idx + 2], data[idx + 3]]
@@ -332,11 +347,12 @@ class IFF_Decoder {
   }
 
   extendEHBPalette() {
-    const chunk = this.chunks.find(({ ID }) => ID === 'CMAP') as CMAP_Chunk
+    const chunk = this.cmap!
     const palette = chunk.palette
     // Some files have the EHB bit set but already contain a 64 colours palette
     // probably for upward compatibility: in this case we don't have to extend
     // the palette.
+    //
     // Files created before (eg. DPaint <= 4) only have a 32 colours CMAP.
     if (palette.byteLength > 32 * 4) {
       console.log('ehb is set but palette is already > 32 colours')
@@ -347,8 +363,8 @@ class IFF_Decoder {
     for (let i = 0; i < palette.byteLength; ++ i) {
       extendedPalette[i] = palette[i]
     }
-    // extend palette
-    for (let i = palette.byteLength, j=0; i < extendedPalette.byteLength; i+=4, j+=4) {
+    // extend palette with 32 darker colors
+    for (let i = palette.byteLength, j = 0; i < extendedPalette.byteLength; i += 4, j += 4) {
       extendedPalette[i] = palette[j] >> 1
       extendedPalette[i + 1] = palette[j + 1] >> 1
       extendedPalette[i + 2] = palette[j + 2] >> 1
@@ -359,33 +375,41 @@ class IFF_Decoder {
   }
 
   reduceHAMPalette() {
-    const cmap = this.chunks.find(({ ID }) => ID === 'CMAP') as CMAP_Chunk
+    const cmap = this.cmap!
     const palette = cmap.palette
-    const { nPlanes } = this.getBMHD()
+    let bits = cmap.bits
+    const { nPlanes } = this.bmhd!
 
-    let bits = 0
     const numColors = palette.byteLength / 4
-    while (2**bits <= numColors)
-      bits++;
 
+    // Some apps save a too large colormap when targeting HAM video modes.
+    // For example, DPaint IV stores a 256 colors colormap when saving
+    // HAM6 (16 color based) files. In this case, nPlanes = 6, bits = 8
+    // When this happens, we simply cull the palette using the correct
+    // size, ignoring other colors which won't be used for HAM6 anyway.
     if (bits > nPlanes) {
       bits -= (bits - nPlanes) + 2
       const length = numColors >> bits
       cmap.palette = cmap.palette.slice(0, 4 * length)
+      cmap.bits = bits
     }
+  }
+
+  /**
+   * Enlarge (EHB) or cull (HAM) palette if needed
+   */
+  fixPalette() {
+    if (this.ehb) {
+      this.extendEHBPalette()
+    } else if (this.ham) {
+      this.reduceHAMPalette()
+    }    
   }
 
   decodeCAMGChunk() {
     const mode = this.buffer.readUint32()
     this.ham = !!(mode & 0x800)
     this.ehb = !!(mode & 0x80)
-
-    // Enlarge the palette with 32 darker colors
-    if (this.ehb) {
-      this.extendEHBPalette()
-    } else if (this.ham) {
-      this.reduceHAMPalette()
-    }
 
     return {
       ID: 'CAMG',
@@ -395,7 +419,7 @@ class IFF_Decoder {
   }
 
   decodeCRNGChunk(length: number) {
-    // reserved
+    // Reserved: simply skip it
     this.buffer.readUint16()
     const rate = this.buffer.readUint16()
     const flags = this.buffer.readUint16()
@@ -413,8 +437,8 @@ class IFF_Decoder {
   }
 
   decodeBODYChunk(length: number) {
-    const bmhd = this.chunks.find(({ ID }) => ID === 'BMHD') as BMHD_Chunk
-    let pixelData: Uint8ClampedArray = null
+    const bmhd = this.bmhd!
+    let pixelData: Uint8ClampedArray
 
     console.log('my row_bytes', bmhd.pitch)
     if (bmhd) {
@@ -426,21 +450,36 @@ class IFF_Decoder {
       new Uint8ClampedArray(this.buffer.buffer, this.buffer.offset, length)
 
       console.log('my iff bitplanes', planes)
-      pixelData = this.planarToChunky(planes, bmhd)
+      pixelData = this.planarToChunky(planes)
+
+      this.fixPalette()
 
       console.log('my pixel_buffer', pixelData)
-      this.displayImage(pixelData!, bmhd)
+      this.displayImage(pixelData!)
     }
 
     return {
       ID: 'BODY',
       pixelData,
-    } as BODY_ChunkODY_Chunk
+    } as BODY_Chunk
     }
+
+  calcCMAPBits(rgbColors: Uint8ClampedArray) {
+    const numColors = rgbColors.byteLength / 4
+    console.log({ numColors })
+    debugger
+    let bits = 0
+    while (2**bits < numColors)
+      bits++;
+
+    return bits
+  }
 
   decodeCMAPChunk(length: number) {
     // could be less that number of planes
     const numColors = length / 3
+    console.log(numColors)
+
     // RGB+A per color
     const palette = new Uint8ClampedArray(numColors * 4)
     const max = numColors * 4
@@ -452,9 +491,12 @@ class IFF_Decoder {
       palette[i + 3] = 255
     }
 
+    const bits = this.calcCMAPBits(palette)
+
     return {
       ID: 'CMAP',
-      palette
+      palette,
+      bits
     } as CMAP_Chunk
   }
 
